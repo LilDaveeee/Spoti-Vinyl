@@ -1,0 +1,242 @@
+import tkinter as tk
+from PIL import Image, ImageTk, ImageDraw, ImageFilter
+import spotipy
+from spotipy.oauth2 import SpotifyOAuth
+import requests
+from io import BytesIO
+import threading
+import time
+from dotenv import load_dotenv
+import os
+from screeninfo import get_monitors
+import keyboard
+
+load_dotenv()
+CLIENT_ID = os.getenv("CLIENT_ID")
+CLIENT_SECRET = os.getenv("CLIENT_SECRET")
+REDIRECT_URI = os.getenv("REDIRECT_URI", "http://localhost:8888/callback")
+SCOPE = "user-read-currently-playing user-modify-playback-state"
+
+SKIP_HOTKEY = os.getenv("SKIP_HOTKEY")
+PAUSE_HOTKEY = os.getenv("PAUSE_HOTKEY")
+PREVIOUS_HOTKEY = os.getenv("PREVIOUS_HOTKEY")
+
+MONITOR = int(os.getenv("MONITOR", 0))
+POSITION_X = int(os.getenv("POSITION_X", 20))
+POSITION_Y = int(os.getenv("POSITION_Y", 20))
+FONT_SIZE_SONG = int(os.getenv("FONT_SIZE_SONG", 14))
+FONT_SIZE_ARTIST = int(os.getenv("FONT_SIZE_ARTIST", 12))
+TEXT_COLOR = os.getenv("TEXT_COLOR", "white")
+SHOW_SONG_NAME = os.getenv("SHOW_SONG_NAME", "true").lower() == "true"
+SHOW_ARTIST_NAME = os.getenv("SHOW_ARTIST_NAME", "true").lower() == "true"
+SHOW_ALBUM_NAME = os.getenv("SHOW_ALBUM_NAME", "true").lower() == "true"
+SHOW_RELEASE_YEAR = os.getenv("SHOW_RELEASE_YEAR", "true").lower() == "true"
+SHOW_TRACK_NUMBER = os.getenv("SHOW_TRACK_NUMBER", "false").lower() == "true"
+SHOW_POPULARITY = os.getenv("SHOW_POPULARITY", "false").lower() == "true"
+BOLD_TEXT = os.getenv("BOLD_TEXT", "true").lower() == "true"
+
+sp = spotipy.Spotify(auth_manager=SpotifyOAuth(client_id=CLIENT_ID, client_secret=CLIENT_SECRET, redirect_uri=REDIRECT_URI, scope=SCOPE))
+
+class SpotifyWidget:
+    def __init__(self, root):
+        self.root = root
+        self.root.overrideredirect(True)
+        self.root.attributes("-topmost", True)
+        self.root.geometry("250x480+20+20")
+        self.root.configure(bg="#808080")
+        self.root.wm_attributes("-transparentcolor", "#808080")
+        self.is_always_on_top = True 
+        self.setup_hotkeys()
+
+        self.monitors = get_monitors()
+        if MONITOR < len(self.monitors):
+            monitor = self.monitors[MONITOR]
+            self.root.geometry(f"250x480+{monitor.x + POSITION_X}+{monitor.y + POSITION_Y}")
+        else:
+            self.root.geometry("250x480+20+20")
+
+        self.canvas = tk.Canvas(root, width=200, height=200, bg="#808080", highlightthickness=0)
+        self.canvas.pack(pady=1)
+
+        self.info_frame = tk.Frame(root, bg="#808080", bd=5)
+        self.info_frame.pack(pady=1, fill="both", expand=True)
+
+        font_style = ("Arial", FONT_SIZE_SONG, "bold" if BOLD_TEXT else "normal")
+        font_style_artist = ("Arial", FONT_SIZE_ARTIST, "bold" if BOLD_TEXT else "normal")
+        
+        self.song_name_label = tk.Label(self.info_frame, text="", font=font_style, bg="#808080", fg=TEXT_COLOR, anchor="center")
+        if SHOW_SONG_NAME:
+            self.song_name_label.pack(pady=2)
+
+        self.artist_name_label = tk.Label(self.info_frame, text="", font=font_style_artist, bg="#808080", fg=TEXT_COLOR, anchor="center")
+        if SHOW_ARTIST_NAME:
+            self.artist_name_label.pack(pady=2)
+
+        self.album_name_label = tk.Label(self.info_frame, text="", font=("Arial", 10, "bold" if BOLD_TEXT else "normal"), bg="#808080", fg=TEXT_COLOR, anchor="center")
+        if SHOW_ALBUM_NAME:
+            self.album_name_label.pack(pady=2)
+
+        self.release_year_label = tk.Label(self.info_frame, text="", font=("Arial", 10, "bold" if BOLD_TEXT else "normal"), bg="#808080", fg=TEXT_COLOR, anchor="center")
+        if SHOW_RELEASE_YEAR:
+            self.release_year_label.pack(pady=2)
+
+        self.track_number_label = tk.Label(self.info_frame, text="", font=("Arial", 10, "bold" if BOLD_TEXT else "normal"), bg="#808080", fg=TEXT_COLOR, anchor="center")
+        if SHOW_TRACK_NUMBER:
+            self.track_number_label.pack(pady=2)
+
+        self.popularity_label = tk.Label(self.info_frame, text="", font=("Arial", 10, "bold" if BOLD_TEXT else "normal"), bg="#808080", fg=TEXT_COLOR, anchor="center")
+        if SHOW_POPULARITY:
+            self.popularity_label.pack(pady=2)
+
+        self.controls_frame = tk.Frame(self.info_frame, bg="#808080")
+        self.controls_frame.pack(pady=5)
+
+        self.angle = 0
+        self.original_album_cover = None
+        self.album_cover = None
+        self.canvas_image = None
+        self.current_track_id = None
+        self.is_playing = False
+        self.animation_running = True
+
+        self.update_song_async()
+
+        self.animation_thread = threading.Thread(target=self.animate, daemon=True)
+        self.animation_thread.start()
+
+        self.canvas.bind("<Button-1>", self.handle_click)
+        self.canvas.bind("<Button-2>", self.toggle_always_on_top)
+        self.canvas.bind("<Button-3>", self.toggle_play_pause)
+
+    def toggle_always_on_top(self, event):
+        self.is_always_on_top = not self.is_always_on_top
+        self.root.attributes("-topmost", self.is_always_on_top)
+
+    def setup_hotkeys(self):
+        if SKIP_HOTKEY:
+            keyboard.add_hotkey(SKIP_HOTKEY, self.next_track)
+        if PAUSE_HOTKEY:
+            keyboard.add_hotkey(PAUSE_HOTKEY, self.toggle_play_pause)
+        if PREVIOUS_HOTKEY:
+            keyboard.add_hotkey(PREVIOUS_HOTKEY, self.previous)
+
+    def update_song(self):
+        try:
+            current_track = sp.currently_playing()
+            if current_track and current_track["is_playing"]:
+                track_id = current_track["item"]["id"]
+                if track_id == self.current_track_id:
+                    return
+
+                self.current_track_id = track_id
+                album_cover_url = current_track["item"]["album"]["images"][0]["url"]
+                
+                response = requests.get(album_cover_url)
+                img_data = Image.open(BytesIO(response.content)).resize((200, 200), Image.LANCZOS)
+                new_album_cover = self.make_circle(img_data)
+                song_name = current_track["item"]["name"]
+                artist_name = current_track["item"]["artists"][0]["name"]
+                album_name = current_track["item"]["album"]["name"]
+                release_year = current_track["item"]["album"]["release_date"][:4]
+                track_number = current_track["item"]["track_number"]
+                popularity = current_track["item"]["popularity"]
+
+                self.root.after(0, self.update_ui, new_album_cover, song_name, artist_name, album_name, release_year, track_number, popularity, current_track["is_playing"])
+            else:
+                self.root.after(0, self.update_ui, None, "", "", "", "", "", "", False)
+        except Exception as e:
+            print("Error fetching song info:", e)
+
+    def update_ui(self, new_album_cover, song_name, artist_name, album_name, release_year, track_number, popularity, is_playing):
+        if new_album_cover:
+            self.original_album_cover = new_album_cover
+            self.album_cover = ImageTk.PhotoImage(self.original_album_cover)
+
+            if self.canvas_image is None:
+                self.canvas_image = self.canvas.create_image(100, 100, image=self.album_cover)
+            else:
+                self.canvas.itemconfig(self.canvas_image, image=self.album_cover)
+
+            if SHOW_SONG_NAME:
+                self.song_name_label.config(text=song_name)
+            if SHOW_ARTIST_NAME:
+                self.artist_name_label.config(text=artist_name)
+            if SHOW_ALBUM_NAME:
+                self.album_name_label.config(text=album_name)
+            if SHOW_RELEASE_YEAR:
+                self.release_year_label.config(text=release_year)
+            if SHOW_TRACK_NUMBER:
+                self.track_number_label.config(text=f"Track #{track_number}")
+            if SHOW_POPULARITY:
+                self.popularity_label.config(text=f"Popularity: {popularity}")
+
+        self.is_playing = is_playing
+        if self.is_playing:
+            self.animation_running = True
+        else:
+            self.animation_running = False
+
+    def update_song_async(self):
+        threading.Thread(target=self.update_song, daemon=True).start()
+        self.root.after(5000, self.update_song_async)
+
+    def animate(self):
+        while True:
+            if self.original_album_cover and self.animation_running:
+                self.angle = (self.angle - 2) % 360
+                rotated_img = self.original_album_cover.rotate(self.angle, resample=Image.BICUBIC)
+                
+                new_album_cover = ImageTk.PhotoImage(rotated_img)
+                
+                self.root.after(0, self.update_canvas_image, new_album_cover)
+
+            time.sleep(0.032)
+
+    def update_canvas_image(self, new_album_cover):
+        self.album_cover = new_album_cover
+        self.canvas.itemconfig(self.canvas_image, image=self.album_cover)
+
+    def make_circle(self, img):
+        size = (200, 200)
+
+        mask = Image.new("L", size, 0)
+        draw = ImageDraw.Draw(mask)
+        inset = 4
+        draw.ellipse((inset, inset, size[0] - inset, size[1] - inset), fill=255)
+        mask = mask.filter(ImageFilter.GaussianBlur(1.5))
+
+        circular_img = Image.new("RGBA", size, (0, 0, 0, 0))
+        circular_img.paste(img, (0, 0), mask)
+
+        return circular_img
+
+    def handle_click(self, event):
+        click_x = event.x
+
+        if click_x < 100:
+            self.previous()
+        elif click_x > 100:
+            self.next_track()
+
+    def toggle_play_pause(self, event=None):
+        if self.is_playing:
+            sp.pause_playback()
+        else:
+            sp.start_playback()
+
+        self.is_playing = not self.is_playing
+        if self.is_playing:
+            self.animation_running = True
+        else:
+            self.animation_running = False
+
+    def previous(self):
+        sp.previous_track()
+
+    def next_track(self):
+        sp.next_track()
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = SpotifyWidget(root)
+    root.mainloop()
