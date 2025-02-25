@@ -2,6 +2,7 @@
 Simple customisable application to show the current album art and other info in a spinning vinyl format either on desktop or display on top.
 
 ![image](https://github.com/user-attachments/assets/2e4e249e-79f2-49ff-9f79-c847a9f372a4)
+![image](https://github.com/user-attachments/assets/0acb1a52-9821-4d36-a699-c887bfe96225)
 
 Installation - 
 1. Download Files
