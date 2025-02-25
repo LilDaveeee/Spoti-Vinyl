@@ -7,3 +7,4 @@ Installation -
 2. Configure .env file to your liking, by default there are no shortcuts/hotkeys, if you want hotkeys simply add ctrl+right to SKIP_HOTKEY, if you want control + right arrow to skip a song.
 3. Client ID and Client Secret need to be configured to use yours https://developer.spotify.com/dashboard, Create an app, name and description are personal to you however callback should be http://localhost:8888/callback
 4. Monitor is counted from 0 so if you have multiple monitors your primary display will be 0, not 1
+![image](https://github.com/user-attachments/assets/38530bfd-23d6-463d-980c-3028fe4b1e1a)
